@@ -16,9 +16,15 @@ Copyright 2020. Huawei Technologies Co., Ltd. All rights reserved.
 
 package config
 
+import "time"
+
 type Config struct {
-	AppId     string
-	AppSecret string
-	AuthUrl   string
-	PushUrl   string
+	AppId               string
+	AppSecret           string
+	AuthUrl             string
+	PushUrl             string
+	HttpProxyUrl        string
+	HttpProxyCACertPath string
+	MaxRetryTimes       int
+	RetryInterval       time.Duration
 }

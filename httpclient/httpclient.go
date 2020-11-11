@@ -20,10 +20,17 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
+
+	"github.com/msalihkarakasli/go-hms-push/push/config"
 )
 
 type PushRequest struct {
@@ -39,9 +46,19 @@ type PushResponse struct {
 	Body   []byte
 }
 
+type HTTPProxyConfig struct {
+	ProxyUrl        *url.URL
+	ProxyCACertPath string
+}
+
 type HTTPRetryConfig struct {
 	MaxRetryTimes int
 	RetryInterval time.Duration
+}
+
+type HTTPClientConfig struct {
+	ProxyConfig *HTTPProxyConfig
+	RetryConfig *HTTPRetryConfig
 }
 
 type HTTPClient struct {
@@ -51,28 +68,93 @@ type HTTPClient struct {
 
 type HTTPOption func(r *http.Request)
 
+func NewHTTPClientConfig(c *config.Config) (*HTTPClientConfig, error) {
+	if c == nil {
+		return nil, errors.New("config is nil")
+	}
+
+	httpClientConfig := HTTPClientConfig{
+		RetryConfig: &HTTPRetryConfig{
+			MaxRetryTimes: c.MaxRetryTimes,
+			RetryInterval: c.RetryInterval,
+		},
+	}
+
+	if len(c.HttpProxyUrl) > 0 {
+		proxyURL, err := url.ParseRequestURI(c.HttpProxyUrl)
+		if err != nil {
+			return nil, fmt.Errorf("parse proxy url error: %w", err)
+		}
+		httpClientConfig.ProxyConfig = &HTTPProxyConfig{ProxyUrl: proxyURL, ProxyCACertPath: c.HttpProxyCACertPath}
+	}
+
+	return &httpClientConfig, nil
+}
+
 func SetHeader(key string, value string) HTTPOption {
 	return func(r *http.Request) {
 		r.Header.Set(key, value)
 	}
 }
 
-func NewHTTPClient() (*HTTPClient, error) {
-	tr := &http.Transport{
+func NewHTTPClient(config *HTTPClientConfig) (*HTTPClient, error) {
+	var proxyURL *url.URL = nil
+
+	if config != nil {
+		if config.ProxyConfig != nil && config.ProxyConfig.ProxyUrl != nil {
+			proxyURL = config.ProxyConfig.ProxyUrl
+			urlScheme := strings.ToLower(proxyURL.Scheme)
+			if urlScheme != "http" && urlScheme != "https" {
+				return nil, errors.New("unsupported proxy url scheme")
+			}
+		}
+		if config.RetryConfig != nil {
+			if config.RetryConfig.MaxRetryTimes < 1 || config.RetryConfig.MaxRetryTimes > 5 {
+				return nil, errors.New("maximum retry times value cannot be less than 1 and more than 5")
+			}
+		}
+	}
+
+	tr := http.Transport{
 		MaxIdleConns:       10,
 		IdleConnTimeout:    30 * time.Second,
 		DisableCompression: true,
-		TLSClientConfig:    &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig:    &tls.Config{},
 	}
 
-	client := &http.Client{Transport: tr}
+	if proxyURL != nil {
+		cacertPath := config.ProxyConfig.ProxyCACertPath
+		if cacertPath != "" {
+			bytes, err := ioutil.ReadFile(cacertPath)
+			if err != nil {
+				return nil, err
+			}
 
-	return &HTTPClient{
-		Client: client,
-		RetryConfig: &HTTPRetryConfig{
-			MaxRetryTimes: 4,
-			RetryInterval: 0},
-	}, nil
+			rootCAs, _ := x509.SystemCertPool()
+			if rootCAs == nil {
+				rootCAs = x509.NewCertPool()
+			}
+			if ok := rootCAs.AppendCertsFromPEM(bytes); !ok {
+				return nil, errors.New("failed to parse proxy server CA certificate")
+			}
+
+			tr.TLSClientConfig.RootCAs = rootCAs
+		}
+
+		tr.Proxy = http.ProxyURL(proxyURL)
+	}
+
+	httpClient := HTTPClient{Client: &http.Client{Transport: &tr}}
+	if config != nil && config.RetryConfig != nil {
+		httpClient.RetryConfig = config.RetryConfig
+	} else {
+		httpClient.RetryConfig = &HTTPRetryConfig{
+			MaxRetryTimes: 1,
+			RetryInterval: 0,
+		}
+	}
+
+	return &httpClient, nil
 }
 
 func (r *PushRequest) buildHTTPRequest() (*http.Request, error) {
