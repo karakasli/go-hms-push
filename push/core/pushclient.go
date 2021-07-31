@@ -21,9 +21,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/msalihkarakasli/go-hms-push/push/authention"
-	"github.com/msalihkarakasli/go-hms-push/push/config"
 	"reflect"
+
+	auth "github.com/msalihkarakasli/go-hms-push/push/authention"
+	"github.com/msalihkarakasli/go-hms-push/push/config"
 
 	"github.com/msalihkarakasli/go-hms-push/httpclient"
 	"github.com/msalihkarakasli/go-hms-push/push/constant"
@@ -48,7 +49,12 @@ func NewHttpClient(c *config.Config) (*HMSClient, error) {
 		return nil, errors.New("pushUrl can't be empty")
 	}
 
-	client, err := httpclient.NewHTTPClient()
+	httpClientCfg, err := httpclient.NewHTTPClientConfig(c)
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := httpclient.NewHTTPClient(httpClientCfg)
 	if err != nil {
 		return nil, errors.New("failed to get http client")
 	}
